@@ -6,8 +6,8 @@
 
 [Unit]
 Description=publish RPI data to Mqtt server
-Requires=mosquitto.service
-After=mosquitto.service
+#Requires=mosquitto.service
+#After=mosquitto.service
 
      
 [Service]
