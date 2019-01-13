@@ -1,0 +1,22 @@
+# Copy to /lib/systemd/system
+# sudo systemctl enable rpipubmqttid.service
+# sudo systemctl start rpipubmqttd.service
+# sudo systemctl start rpipubmqttd.service
+# 
+
+[Unit]
+Description=publish RPI data to Mqtt server
+Requires=mosquitto.service
+After=mosquitto.service
+
+     
+[Service]
+Type=forking
+PIDFile=/var/run/rpipubmqttd.pid
+ExecStart=/opt/rpipubmqttd/dhtpubmqttd
+
+#StandardOutput=null
+     
+[Install]
+WantedBy=multi-user.target
+Alias=rpipubmqttd.service
