@@ -28,6 +28,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/sysinfo.h>
 #include <string.h>
 
 #include <libconfig.h>      /* apt-get install libconfig-dev */
@@ -72,6 +73,8 @@ int fpLockfile ;                            /* points to the lock file */
 
 
 char text[128];
+
+struct sysinfo systemInfo ;
 
 /*--------------------------------------------------------------------------------------------------
     ExitDaemon()
@@ -174,6 +177,42 @@ double CPUTemp()
   return( T ) ; 
 }
 
+unsigned long RAMfree()
+{
+ //printf( "Free Ram : %ld\n" ,systemInfo.freeram / 1024L ) ;
+ return( systemInfo.freeram / 1024L ) ;
+}
+
+unsigned long RAMused()
+{
+ //printf( "Used Ram : %ld\n" ,(systemInfo.totalram - systemInfo.freeram) / 1024L ) ;
+ return( (systemInfo.totalram - systemInfo.freeram) / 1024L ) ;
+}
+
+
+unsigned long SWAPused()
+{
+ //printf( "Used Swap: %ld\n" ,(systemInfo.totalswap - systemInfo.freeswap) / 1024L ) ;
+ return( (systemInfo.totalswap - systemInfo.freeswap) / 1024L ) ;
+}
+
+
+char *Uptime()
+{
+
+    int days, hours, mins ;
+    static char strText[128];
+
+ //printf( "Processes : %d\n"  ,systemInfo.procs ) ;
+ //printf( "Uptime    : %ld\n"  ,systemInfo.uptime ) ;
+
+    days  =   systemInfo.uptime / 86400;                       // 24 x 60 x 60
+    hours = ( systemInfo.uptime / 3600) - (days * 24);
+    mins  = ( systemInfo.uptime / 60) - (days * 1440) - (hours * 60);
+
+    sprintf( strText, "%dd%2dh%2dm",days, hours, mins);
+    return( strText) ;
+}
 
 
 
@@ -292,7 +331,10 @@ int main(int argc, char* argv[])
  		if ( loglevel == DLOG_DEBUG ) syslog( LOG_NOTICE, "reading data from RPI..\n");
 
        
-        sprintf (text, "{\"CPU_Temp\":\"%.2f\",\"Disk_Usage\":\"%.2f\"}", CPUTemp(), DiskUsage());
+        sysinfo( &systemInfo) ;   //get the infos
+
+        sprintf (text, "{\"CPU_Temp\":\"%.2f\",\"Disk_Usage\":\"%.2f\",\"RAM_used\":\"%ld\",\"RAM_free\":\"%ld\",\"SWAP_used\":\"%ld\",\"Uptime\":\"%s\"}", 
+             CPUTemp(), DiskUsage(), RAMused(), RAMfree(), SWAPused(), Uptime() );
 
         if ( loglevel == DLOG_DEBUG ) syslog( LOG_NOTICE, text );
 

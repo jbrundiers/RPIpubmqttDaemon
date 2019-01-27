@@ -13,7 +13,7 @@ Description=publish RPI data to Mqtt server
 [Service]
 Type=forking
 PIDFile=/var/run/rpipubmqttd.pid
-ExecStart=/opt/rpipubmqttd/dhtpubmqttd
+ExecStart=/opt/rpipubmqttd/rpipubmqttd
 
 #StandardOutput=null
      

@@ -46,7 +46,7 @@ sudo cp rpipubmqttd.service /lib/systemd/system/
 ```
 5. Enable RPIpubMqttDaemon service
 ``` code
-sudo systemctl enable rpipubmqttdaemon.service
+sudo systemctl enable rpipubmqttd.service
 ```
 6. Start RPIpubMqttDaemon.service
 ``` code
