@@ -34,21 +34,26 @@
 #include <libconfig.h>      /* apt-get install libconfig-dev */
 #include <mosquitto.h>      /* apt-get install libmosquitto-dev */ 
 
+#include "rpipubmqttd.h" 
+
 
 static char version[]   = "RPIpubMqttDaemon v1.04 01/13/2019";
 
 /* ------------------------------------------------------------------- 
  * libconfig variables 
  * ------------------------------------------------------------------- */
-config_t cfg, *cf;
+config_t lib_cfg, *lib_cf;
 
 /* ------------------------------------------------------------------- 
  * MQTT Server parameters 
  * ------------------------------------------------------------------- */
-const char *mqttHostname ;
-int         mqttPort ;
-const char *mqttUser; 
-const char *mqttUserpassword; 
+
+struct mosq_config cfg;
+
+const char *mqttHostname = "localhost";
+int         mqttPort = 1883;
+const char *mqttUser = "mqtt_user"; 
+const char *mqttUserpassword = "mypassword"; 
 const char *mqttTopic; 
 const bool  mqttRetain ;
 int         mqttConnectretries = 5 ;
@@ -92,7 +97,7 @@ void ExitDaemon()
     close( fpLockfile ) ;                           /* Remove the Lock file */
     remove( LOCK_FILE ) ;
 
-    config_destroy(cf) ;                            /* release config  */
+    config_destroy(lib_cf) ;                            /* release config  */
 
     closelog() ;                                    /* disconnect from syslog */
     exit(EXIT_SUCCESS) ;
@@ -106,46 +111,82 @@ void SignalHandler(int sig)
 {
     if(sig == SIGTERM)                           /* kill -15 shut down the daemon and exit cleanly */
     {
-        if ( loglevel == DLOG_DEBUG ) syslog( LOG_NOTICE, "SIGTERM received!\n");
+        syslog( LOG_NOTICE, "SIGTERM received!\n");
         ExitDaemon() ;
         return;
     }
 
     else if(sig == SIGHUP)                       /* kill -1 reload the configuration files, if this applies */
     {
-        if ( loglevel == DLOG_DEBUG ) syslog( LOG_NOTICE, "SIGHUP received!\n" ) ;
+        syslog( LOG_NOTICE, "SIGHUP received!\n" ) ;
         return;
     }
     else {
-        if ( loglevel == DLOG_DEBUG ) syslog( LOG_NOTICE, "unhandled signal received!\n" ) ;
+        syslog( LOG_NOTICE, "unhandled signal received!\n" ) ;
 	    return ;
     }
 }
 
 
 /*--------------------------------------------------------------------------------------------------
-    readConfig() 
+    readConfigFile() 
 ---------------------------------------------------------------------------------------------------*/
-int readConfig() 
+int readConfigFile() 
 {
-    if (!config_read_file(cf, "/opt/rpipubmqttd/rpipubmqttd.conf")) {
+
+    const char *strBuffer = "1234567890" ;
+
+    if (!config_read_file(lib_cf, "/opt/rpipubmqttd/rpipubmqttd.conf")) {
         syslog(LOG_ERR, "can't read config file");
-        config_destroy(cf);
+        config_destroy(lib_cf);
         return(EXIT_FAILURE);
     }
 
-    config_lookup_int(cf, "rpi_readinterval", &rpi_readinterval) ;
-    config_lookup_int(cf, "log_level", &loglevel) ;
-    config_lookup_string(cf, "mqtt.host", &mqttHostname) ;
-    config_lookup_string(cf, "mqtt.user", &mqttUser) ;
-    config_lookup_string(cf, "mqtt.user_pw", &mqttUserpassword) ;
-    config_lookup_string(cf, "mqtt.topic", &mqttTopic) ;
-    config_lookup_bool(cf, "mqtt.retain", &mqttRetain) ;
-    config_lookup_int(cf, "mqtt.port", &mqttPort) ;
-    config_lookup_int( cf, "mqtt.connectretries", &mqttConnectretries ) ;
+    config_lookup_int(lib_cf, "rpi_readinterval", &rpi_readinterval) ;
+    config_lookup_int(lib_cf, "log_level", &loglevel) ;
+//    config_lookup_string(lib_cf, "mqtt.host", &mqttHostname) ;
+//    config_lookup_string(lib_cf, "mqtt.user", &mqttUser) ;
+//    config_lookup_string(lib_cf, "mqtt.user_pw", &mqttUserpassword) ;
+//    config_lookup_string(lib_cf, "mqtt.topic", &mqttTopic) ;
+    config_lookup_bool(lib_cf, "mqtt.retain", &mqttRetain) ;
+//    config_lookup_int(lib_cf, "mqtt.port", &mqttPort) ;
+    config_lookup_int( lib_cf, "mqtt.connect_retries", &mqttConnectretries ) ;
+
+
+    config_lookup_int(lib_cf, "mqtt.port", &cfg.port) ;
+
+    config_lookup_string(lib_cf, "mqtt.user_pw", &strBuffer) ;
+    cfg.password = strdup(strBuffer);
+
+    config_lookup_string(lib_cf, "mqtt.user", &strBuffer) ;
+    cfg.username = strdup(strBuffer);
+
+    config_lookup_string(lib_cf, "mqtt.host", &strBuffer) ;
+    cfg.host = strdup(strBuffer);
+
+    config_lookup_string(lib_cf, "mqtt.topic", &strBuffer) ;
+    cfg.topic = strdup(strBuffer);
+
 
     return(EXIT_SUCCESS) ;
 }
+
+void init_mosq_config(struct mosq_config *cfg)
+{
+    memset(cfg, 0, sizeof(*cfg));
+    cfg->port = -1;
+    cfg->max_inflight = 20;
+    cfg->keepalive = 60;
+    cfg->clean_session = true;
+    cfg->eol = true;
+    cfg->repeat_count = 1;
+    cfg->repeat_delay.tv_sec = 0;
+    cfg->repeat_delay.tv_usec = 0;
+    cfg->protocol_version = MQTT_PROTOCOL_V311;
+    cfg->session_expiry_interval = -1; /* -1 means unset here, the user can't set it to -1. */
+}
+
+
 
 
 double DiskUsage()
@@ -274,83 +315,109 @@ int main(int argc, char* argv[])
 
  	syslog( LOG_NOTICE, "Daemon started.\n");
 
-    
-    cf = &cfg;                                      /* Init libconfig */
-    config_init(cf);
+    /* ---- Get all program parameter   ----------*/
+    init_mosq_config( &cfg ) ;                      /* Init Mosquitto client configuration values */
 
-    if ( readConfig() != EXIT_SUCCESS) 
-        exit(EXIT_FAILURE);
+    lib_cf = &lib_cfg;                              /* Init libconfig to read config file */
+    config_init(lib_cf);
 
-    mosquitto_lib_init();                           /* Initialize the Mosquitto library */
-
-    /* Create a new Mosquitto runtime instance with a random client ID, */
-    /* and no application-specific callback data.                       */
-    mosq = mosquitto_new (NULL, true, NULL);
-    if (!mosq)
+    if ( readConfigFile() != EXIT_SUCCESS)
     {
-        syslog(LOG_ERR, "Initialising  Mosquitto library failed");
+        syslog(LOG_ERR, "read config file failed");
         exit(EXIT_FAILURE);
     }
 
-    mosquitto_username_pw_set (mosq, mqttUser, mqttUserpassword);
+    
+    /* ---- Setup the connection to the brocker ----------*/
 
+    mosquitto_lib_init() ;                          /* Initialize the Mosquitto library */
+                                                    /* always returns MOSQ_ERR_SUCCESS  */ 
+
+
+    int major, minor, revision;
+    mosquitto_lib_version(&major, &minor, &revision);
+    syslog(LOG_NOTICE, "Mosquitto lib version %d.%d.%d", major, minor, revision ) ;
+
+
+    /* Create a new Mosquitto runtime instance with a random client ID, */
+    /* and no application-specific callback data.                       */
+    mosq = mosquitto_new (cfg.id, cfg.clean_session, NULL);
+    if (mosq == NULL )
+    {
+        syslog(LOG_ERR, "initialising Mosquitto instance failed");
+        exit(EXIT_FAILURE);
+    }
+
+    if ( mosquitto_username_pw_set (mosq, cfg.username, cfg.password) != MOSQ_ERR_SUCCESS )
+    {
+        syslog(LOG_ERR, "set user/password for Mosquitto instance failed");
+        exit(EXIT_FAILURE);
+    }
 
     /* try to connect to MQTT server */
     int ret ;
     do 
     {
-        syslog(LOG_NOTICE, "try connect to Mosquitto server...." ) ;
+        syslog(LOG_NOTICE, "try connect to Mosquitto server %s ...", mqttHostname ) ;
 
+        syslog(LOG_NOTICE, "U=%s P=%s H=%s T=%s", cfg.username, cfg.password, cfg.host, cfg.topic ) ;
+ 
         /* connect to the MQTT server, do not use a keep-alive ping */
-        ret = mosquitto_connect (mosq, mqttHostname, mqttPort, 0); 
-        if (ret)
+        ret = mosquitto_connect_bind_v5(mosq, cfg.host, cfg.port, cfg.keepalive, cfg.bind_address, cfg.connect_props);
+        // ret = mosquitto_connect_srv (mosq, cfg.host, cfg.keepalive, cfg.bind_address ); 
+        if (ret != MOSQ_ERR_SUCCESS )
         {
-            syslog(LOG_NOTICE, "connect to Mosquitto server failed." ) ;
+            syslog(LOG_NOTICE, "connect to Mosquitto server failed (%s).", mosquitto_strerror(ret) ) ;
             mqttConnectretries-- ;
             sleep ( 1 ) ;
         }  
  
-    } while ((ret != 0) && mqttConnectretries ) ;
+    } while ((ret != MOSQ_ERR_SUCCESS) && mqttConnectretries ) ;
 
-    if ( ! mqttConnectretries ) 
+    if ( ret == MOSQ_ERR_SUCCESS ) 
     {
-            syslog(LOG_ERR, "Can't connect to Mosquitto server." ) ;
-            exit(EXIT_FAILURE);
-    }
-    else
-        syslog(LOG_NOTICE, "Connected to Mosquitto server." ) ;
+        syslog(LOG_NOTICE, "Connected to Mosquitto server: %s.", cfg.host ) ;
 
-    /*------------------------------------------------------------------*/
-    /* the main loop for the daemon                                     */
-    /*------------------------------------------------------------------*/
-	while (1)
-	{
-		/* Dont block context switches, let the process sleep for some time */
-        sleep( 1 ) ;
+        /*------------------------------------------------------------------*/
+        /* the main loop for the daemon                                     */
+        /*------------------------------------------------------------------*/
+	    while (1)
+	    {
+		    /* Dont block context switches, let the process sleep for some time */
+            sleep( 10 ) ;
 
- 		if ( loglevel == DLOG_DEBUG ) syslog( LOG_NOTICE, "reading data from RPI..\n");
-
+ 		    syslog( LOG_NOTICE, "reading data from RPI..\n");
        
-        sysinfo( &systemInfo) ;   //get the infos
+            sysinfo( &systemInfo) ;   //get the infos
 
-        sprintf (text, "{\"CPU_Temp\":\"%.2f\",\"Disk_Usage\":\"%.2f\",\"RAM_used\":\"%ld\",\"RAM_free\":\"%ld\",\"SWAP_used\":\"%ld\",\"Uptime\":\"%s\"}", 
+            sprintf (text, "{\"CPU_Temp\":\"%.2f\",\"Disk_Usage\":\"%.2f\",\"RAM_used\":\"%ld\",\"RAM_free\":\"%ld\",\"SWAP_used\":\"%ld\",\"Uptime\":\"%s\"}", 
              CPUTemp(), DiskUsage(), RAMused(), RAMfree(), SWAPused(), Uptime() );
 
-        if ( loglevel == DLOG_DEBUG ) syslog( LOG_NOTICE, text );
+            syslog( LOG_NOTICE, "publish to mqtt: %s.", text );
 
-        /* Publish the message to the topic */
-        int ret = mosquitto_publish (mosq, NULL, mqttTopic,strlen (text), text, 0, mqttRetain ) ;
+            /* Publish the message to the topic */
+            ret = mosquitto_publish_v5(mosq, NULL, cfg.topic, strlen(text), text, 0, mqttRetain, cfg.publish_props);
+//            ret = mosquitto_publish (mosq, NULL, mqttTopic,strlen (text), text, 0, mqttRetain ) ;
 
-        if (ret)
-        {
-             syslog(LOG_ERR, "Can't publish to Mosquitto server." ) ;
-        }
+            if (ret)
+            {
+                syslog(LOG_ERR, "Can't publish to Mosquitto server (%s).", mosquitto_strerror(ret) ) ;
+                break ;
+           }      
 
-		sleep(rpi_readinterval) ;
+		    sleep(rpi_readinterval) ;
 
-	}
+	    }
+    }
+    else {
 
+        syslog(LOG_ERR, "Can't connect to Mosquitto server." ) ;
+
+    }
+    mosquitto_destroy(mosq);
+    mosquitto_lib_cleanup();
  	syslog( LOG_NOTICE, "Daemon ended.");
 	return (EXIT_SUCCESS);
 }
+
 
