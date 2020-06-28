@@ -37,7 +37,7 @@
 #include "rpipubmqttd.h" 
 
 
-static char version[]   = "RPIpubMqttDaemon v1.04 01/13/2019";
+static char version[]   = "RPIpubMqttDaemon v1.10 06/27/2020";
 
 /* ------------------------------------------------------------------- 
  * libconfig variables 
@@ -88,16 +88,20 @@ struct sysinfo systemInfo ;
 void ExitDaemon()
 {
 
-    syslog( LOG_NOTICE, "shuting down ..\n");
+    syslog( LOG_NOTICE, "disconnecting from server ..\n");
+    mosquitto_disconnect(mosq);                     /* Disconnect from MQTT */
+    mosquitto_loop_stop(mosq, true) ;               /* stop the network thread previously created with mosquitto_loop_start. */
 
-    mosquitto_disconnect (mosq);                    /* Disconnect from MQTT */
     mosquitto_destroy (mosq);
     mosquitto_lib_cleanup();
 
+    syslog( LOG_NOTICE, "clear lock ..\n");
     close( fpLockfile ) ;                           /* Remove the Lock file */
     remove( LOCK_FILE ) ;
 
+    syslog( LOG_NOTICE, "destroy config ...\n");
     config_destroy(lib_cf) ;                            /* release config  */
+    
 
     closelog() ;                                    /* disconnect from syslog */
     exit(EXIT_SUCCESS) ;
@@ -374,9 +378,15 @@ int main(int argc, char* argv[])
  
     } while ((ret != MOSQ_ERR_SUCCESS) && mqttConnectretries ) ;
 
+    
+    // mosquitto_loop_start(mosq) ;
+
+
     if ( ret == MOSQ_ERR_SUCCESS ) 
     {
         syslog(LOG_NOTICE, "Connected to Mosquitto server: %s.", cfg.host ) ;
+
+        mosquitto_loop_start(mosq) ;
 
         /*------------------------------------------------------------------*/
         /* the main loop for the daemon                                     */
@@ -384,7 +394,7 @@ int main(int argc, char* argv[])
 	    while (1)
 	    {
 		    /* Dont block context switches, let the process sleep for some time */
-            sleep( 10 ) ;
+            //sleep( 10 ) ;
 
  		    syslog( LOG_NOTICE, "reading data from RPI..\n");
        
@@ -403,8 +413,9 @@ int main(int argc, char* argv[])
             {
                 syslog(LOG_ERR, "Can't publish to Mosquitto server (%s).", mosquitto_strerror(ret) ) ;
                 break ;
-           }      
-
+            }      
+            
+            //sleep(5) ;
 		    sleep(rpi_readinterval) ;
 
 	    }
@@ -414,9 +425,10 @@ int main(int argc, char* argv[])
         syslog(LOG_ERR, "Can't connect to Mosquitto server." ) ;
 
     }
-    mosquitto_destroy(mosq);
-    mosquitto_lib_cleanup();
+    //mosquitto_destroy(mosq);
+    //mosquitto_lib_cleanup();
  	syslog( LOG_NOTICE, "Daemon ended.");
+    ExitDaemon() ;
 	return (EXIT_SUCCESS);
 }
 
