@@ -39,26 +39,14 @@
 
 static char version[]   = "RPIpubMqttDaemon v1.10 06/27/2020";
 
-/* ------------------------------------------------------------------- 
- * libconfig variables 
- * ------------------------------------------------------------------- */
-config_t lib_cfg, *lib_cf;
 
 /* ------------------------------------------------------------------- 
- * MQTT Server parameters 
+ * MQTT parameters 
  * ------------------------------------------------------------------- */
 
-struct mosq_config cfg;
+struct mosq_config cfg;             /* holds the client configuration  */
 
-const char *mqttHostname = "localhost";
-int         mqttPort = 1883;
-const char *mqttUser = "mqtt_user"; 
-const char *mqttUserpassword = "mypassword"; 
-const char *mqttTopic; 
-const bool  mqttRetain ;
-int         mqttConnectretries = 5 ;
-
-struct mosquitto *mosq = NULL;              /* handle mosqitto library */
+struct mosquitto *mosq = NULL;      /* handle for the mosqitto library */
 
 /* ---------------------------------------------------------------------- 
  * Logging parameters 
@@ -73,10 +61,12 @@ static int loglevel = DLOG_INFO;
 /* ------------------------------------------------------------------- */
 #define DAEMON_NAME "rpipubmqttd" 
 #define LOCK_FILE   "/var/run/"DAEMON_NAME".pid"
+
 int rpi_readinterval = 200 ;
 int fpLockfile ;                            /* points to the lock file */
 
 
+int         mqttConnectretries = 5 ;
 char text[128];
 
 struct sysinfo systemInfo ;
@@ -87,7 +77,6 @@ struct sysinfo systemInfo ;
 ---------------------------------------------------------------------------------------------------*/
 void ExitDaemon()
 {
-
     syslog( LOG_NOTICE, "disconnecting from server ..\n");
     mosquitto_disconnect(mosq);                     /* Disconnect from MQTT */
     mosquitto_loop_stop(mosq, true) ;               /* stop the network thread previously created with mosquitto_loop_start. */
@@ -98,10 +87,6 @@ void ExitDaemon()
     syslog( LOG_NOTICE, "clear lock ..\n");
     close( fpLockfile ) ;                           /* Remove the Lock file */
     remove( LOCK_FILE ) ;
-
-    syslog( LOG_NOTICE, "destroy config ...\n");
-    config_destroy(lib_cf) ;                            /* release config  */
-    
 
     closelog() ;                                    /* disconnect from syslog */
     exit(EXIT_SUCCESS) ;
@@ -137,57 +122,59 @@ void SignalHandler(int sig)
 ---------------------------------------------------------------------------------------------------*/
 int readConfigFile() 
 {
+    config_t lib_cfg ; /* *lib_cf; */
 
-    const char *strBuffer = "1234567890" ;
+    //lib_cf = &lib_cfg;                              /* Init libconfig to read config file */
 
-    if (!config_read_file(lib_cf, "/opt/rpipubmqttd/rpipubmqttd.conf")) {
-        syslog(LOG_ERR, "can't read config file");
-        config_destroy(lib_cf);
+    config_init(&lib_cfg);
+
+    const char *strBuffer = NULL ;
+    int  tmp = 0 ;
+    
+
+    if (!config_read_file(&lib_cfg, "/opt/rpipubmqttd/rpipubmqttd.conf")) {
+        syslog(LOG_ERR, "error reading config %s line %d: %s", config_error_file(&lib_cfg), config_error_line(&lib_cfg), config_error_text(&lib_cfg));
+        config_destroy(&lib_cfg);
         return(EXIT_FAILURE);
     }
 
-    config_lookup_int(lib_cf, "rpi_readinterval", &rpi_readinterval) ;
-    config_lookup_int(lib_cf, "log_level", &loglevel) ;
-//    config_lookup_string(lib_cf, "mqtt.host", &mqttHostname) ;
-//    config_lookup_string(lib_cf, "mqtt.user", &mqttUser) ;
-//    config_lookup_string(lib_cf, "mqtt.user_pw", &mqttUserpassword) ;
-//    config_lookup_string(lib_cf, "mqtt.topic", &mqttTopic) ;
-    config_lookup_bool(lib_cf, "mqtt.retain", &mqttRetain) ;
-//    config_lookup_int(lib_cf, "mqtt.port", &mqttPort) ;
-    config_lookup_int( lib_cf, "mqtt.connect_retries", &mqttConnectretries ) ;
+    /* */
+    config_lookup_int(&lib_cfg, "rpi_readinterval", &rpi_readinterval) ;
+    config_lookup_int(&lib_cfg, "log_level", &loglevel) ;
+    config_lookup_int(&lib_cfg, "mqtt.connect_retries", &mqttConnectretries ) ;
 
+    /* MQTT client configuration */
+    config_lookup_int(&lib_cfg, "mqtt.port", &cfg.port) ;
+    config_lookup_bool(&lib_cfg, "mqtt.retain", &tmp) ;
+    cfg.retain = tmp ;
 
-    config_lookup_int(lib_cf, "mqtt.port", &cfg.port) ;
-
-    config_lookup_string(lib_cf, "mqtt.user_pw", &strBuffer) ;
+    config_lookup_string(&lib_cfg, "mqtt.user_pw", &strBuffer) ;
     cfg.password = strdup(strBuffer);
 
-    config_lookup_string(lib_cf, "mqtt.user", &strBuffer) ;
+    config_lookup_string(&lib_cfg, "mqtt.user", &strBuffer) ;
     cfg.username = strdup(strBuffer);
 
-    config_lookup_string(lib_cf, "mqtt.host", &strBuffer) ;
+    config_lookup_string(&lib_cfg, "mqtt.host", &strBuffer) ;
     cfg.host = strdup(strBuffer);
 
-    config_lookup_string(lib_cf, "mqtt.topic", &strBuffer) ;
+    config_lookup_string(&lib_cfg, "mqtt.topic", &strBuffer) ;
     cfg.topic = strdup(strBuffer);
 
+    config_destroy(&lib_cfg) ;                        /* release config  */
 
     return(EXIT_SUCCESS) ;
 }
 
-void init_mosq_config(struct mosq_config *cfg)
+/*--------------------------------------------------------------------------------------------------
+    Init_mosq_config()  Init mosq_config with default values
+---------------------------------------------------------------------------------------------------*/
+void Init_mosq_config(struct mosq_config *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
     cfg->port = -1;
-    cfg->max_inflight = 20;
     cfg->keepalive = 60;
     cfg->clean_session = true;
-    cfg->eol = true;
-    cfg->repeat_count = 1;
-    cfg->repeat_delay.tv_sec = 0;
-    cfg->repeat_delay.tv_usec = 0;
     cfg->protocol_version = MQTT_PROTOCOL_V311;
-    cfg->session_expiry_interval = -1; /* -1 means unset here, the user can't set it to -1. */
 }
 
 
@@ -320,17 +307,15 @@ int main(int argc, char* argv[])
  	syslog( LOG_NOTICE, "Daemon started.\n");
 
     /* ---- Get all program parameter   ----------*/
-    init_mosq_config( &cfg ) ;                      /* Init Mosquitto client configuration values */
+    Init_mosq_config( &cfg ) ;                      /* Init Mosquitto client configuration default values */
 
-    lib_cf = &lib_cfg;                              /* Init libconfig to read config file */
-    config_init(lib_cf);
-
-    if ( readConfigFile() != EXIT_SUCCESS)
+    if ( readConfigFile() != EXIT_SUCCESS)          /* Read the configuration file */
     {
         syslog(LOG_ERR, "read config file failed");
         exit(EXIT_FAILURE);
     }
 
+    syslog(LOG_NOTICE, "read config file\n");
     
     /* ---- Setup the connection to the brocker ----------*/
 
@@ -340,7 +325,7 @@ int main(int argc, char* argv[])
 
     int major, minor, revision;
     mosquitto_lib_version(&major, &minor, &revision);
-    syslog(LOG_NOTICE, "Mosquitto lib version %d.%d.%d", major, minor, revision ) ;
+    syslog(LOG_NOTICE, "Mosquitto lib version %d.%d.%d\n", major, minor, revision ) ;
 
 
     /* Create a new Mosquitto runtime instance with a random client ID, */
@@ -362,13 +347,10 @@ int main(int argc, char* argv[])
     int ret ;
     do 
     {
-        syslog(LOG_NOTICE, "try connect to Mosquitto server %s ...", mqttHostname ) ;
+        syslog(LOG_NOTICE, "try connect to Mosquitto server %s ...", cfg.host ) ;
 
-        syslog(LOG_NOTICE, "U=%s P=%s H=%s T=%s", cfg.username, cfg.password, cfg.host, cfg.topic ) ;
- 
         /* connect to the MQTT server, do not use a keep-alive ping */
         ret = mosquitto_connect_bind_v5(mosq, cfg.host, cfg.port, cfg.keepalive, cfg.bind_address, cfg.connect_props);
-        // ret = mosquitto_connect_srv (mosq, cfg.host, cfg.keepalive, cfg.bind_address ); 
         if (ret != MOSQ_ERR_SUCCESS )
         {
             syslog(LOG_NOTICE, "connect to Mosquitto server failed (%s).", mosquitto_strerror(ret) ) ;
@@ -379,14 +361,12 @@ int main(int argc, char* argv[])
     } while ((ret != MOSQ_ERR_SUCCESS) && mqttConnectretries ) ;
 
     
-    // mosquitto_loop_start(mosq) ;
-
 
     if ( ret == MOSQ_ERR_SUCCESS ) 
     {
         syslog(LOG_NOTICE, "Connected to Mosquitto server: %s.", cfg.host ) ;
 
-        mosquitto_loop_start(mosq) ;
+        mosquitto_loop_start(mosq) ;    /* this also handels the keepalive handshake with the server ! */
 
         /*------------------------------------------------------------------*/
         /* the main loop for the daemon                                     */
@@ -406,7 +386,7 @@ int main(int argc, char* argv[])
             syslog( LOG_NOTICE, "publish to mqtt: %s.", text );
 
             /* Publish the message to the topic */
-            ret = mosquitto_publish_v5(mosq, NULL, cfg.topic, strlen(text), text, 0, mqttRetain, cfg.publish_props);
+            ret = mosquitto_publish_v5(mosq, NULL, cfg.topic, strlen(text), text, 0, cfg.retain, cfg.publish_props);
 //            ret = mosquitto_publish (mosq, NULL, mqttTopic,strlen (text), text, 0, mqttRetain ) ;
 
             if (ret)
@@ -425,8 +405,6 @@ int main(int argc, char* argv[])
         syslog(LOG_ERR, "Can't connect to Mosquitto server." ) ;
 
     }
-    //mosquitto_destroy(mosq);
-    //mosquitto_lib_cleanup();
  	syslog( LOG_NOTICE, "Daemon ended.");
     ExitDaemon() ;
 	return (EXIT_SUCCESS);
